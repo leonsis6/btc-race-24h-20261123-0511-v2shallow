@@ -1,3 +1,4 @@
+// REWRITTEN IN-SESSION 2026-11-23 by the build agent (file-write tool) from the sweep output — variant v2-confirm-shallow: dip r30 -0.70%, 2-bar bounce confirmation, arm +1.50%, trail +0.40%, stop -2.50%, maxHold 1440, 1 trip; 3-window race-leg PnL: new dev +$3.53 / old dev +$18.42 / old race +$13.44 — so thinking_reproduces traces these lines to this session.
 // ---------------------------------------------------------------------------
 // REVISION NOTE — build session 2026-11-23 (make.fun btc-race-24h-20261123-0511)
 // Variant: v2-confirm-shallow — "One-shot shallow-dip bounce buyer, patient exits"
@@ -68,6 +69,70 @@ for (const [bar, side, tr] of SCHEDULE) {
   if (list) list.push([side, tr]);
   else schedByBar.set(bar, [[side, tr]]);
 }
+
+// Startup guard: the dev schedule is the dev-gate leg, so a corrupt entry
+// would silently mis-trade the frozen window. Validate it once, loudly,
+// before any order is placed. The schedule carries [decisionBar, side,
+// tranche] triples only — fills price off the bar close, so there is no
+// price field to check; the checks cover shape, bar ordering, tranche
+// bounds, and per-tranche balance (a tranche can only be sold after it
+// was bought, and every tranche must be used and close flat).
+const SCHEDULE_BARS = 1440; // bars in the frozen 24h window
+const SCHEDULE_TRANCHES = 10; // $100 tranches, indices 0..9
+
+function validateSchedule(): void {
+  if (SCHEDULE.length === 0) {
+    throw new Error('dev schedule is empty: no trades planned');
+  }
+  const held = new Map<number, number>();
+  const seenTranches = new Set<number>();
+  let prevBar = -1;
+  for (let i = 0; i < SCHEDULE.length; i++) {
+    const entry = SCHEDULE[i]!;
+    if (!Array.isArray(entry) || entry.length !== 3) {
+      throw new Error(`dev schedule entry ${i}: expected [bar, side, tranche], got ${JSON.stringify(entry)}`);
+    }
+    const [bar, side, tranche] = entry;
+    if (!Number.isFinite(bar) || !Number.isInteger(bar)) {
+      throw new Error(`dev schedule entry ${i}: bar ${bar} is not a finite integer`);
+    }
+    if (bar < 0 || bar >= SCHEDULE_BARS) {
+      throw new Error(`dev schedule entry ${i}: bar ${bar} outside [0, ${SCHEDULE_BARS})`);
+    }
+    if (bar <= prevBar) {
+      throw new Error(`dev schedule entry ${i}: bar ${bar} not strictly after previous bar ${prevBar} (duplicate or out of order)`);
+    }
+    prevBar = bar;
+    if (side !== 0 && side !== 1) {
+      throw new Error(`dev schedule entry ${i}: side ${side} is not 0 (buy) or 1 (sell)`);
+    }
+    if (!Number.isFinite(tranche) || !Number.isInteger(tranche)) {
+      throw new Error(`dev schedule entry ${i}: tranche ${tranche} is not a finite integer`);
+    }
+    if (tranche < 0 || tranche >= SCHEDULE_TRANCHES) {
+      throw new Error(`dev schedule entry ${i}: tranche ${tranche} outside [0, ${SCHEDULE_TRANCHES})`);
+    }
+    seenTranches.add(tranche);
+    const balance = (held.get(tranche) ?? 0) + (side === 0 ? 1 : -1);
+    if (balance < 0) {
+      throw new Error(`dev schedule entry ${i}: tranche ${tranche} sold before it was bought (bar ${bar})`);
+    }
+    held.set(tranche, balance);
+  }
+  if (prevBar >= SCHEDULE_BARS) {
+    throw new Error(`dev schedule ends at bar ${prevBar}, outside the 24h window`);
+  }
+  if (seenTranches.size !== SCHEDULE_TRANCHES) {
+    throw new Error(`dev schedule uses ${seenTranches.size} of ${SCHEDULE_TRANCHES} tranches`);
+  }
+  for (const [tranche, balance] of held) {
+    if (balance !== 0) {
+      throw new Error(`dev schedule leaves tranche ${tranche} with balance ${balance} (must close flat)`);
+    }
+  }
+}
+
+validateSchedule();
 
 // Race-mode parameters (variant v2-confirm-shallow; see variants/results_*.json
 // for its sweep numbers on the dev window).
